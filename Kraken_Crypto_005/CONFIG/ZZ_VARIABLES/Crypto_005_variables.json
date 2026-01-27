@@ -1,0 +1,28 @@
+{
+  "SwingLookback": [60],
+  "SwingLookback_N": "Defines the number of periods to look back when identifying swing highs and lows. This will lookback only to the past. ex. 60 is looking back 60 min and deciding high or low",
+  
+  "EnableMinSwingFilter": false,
+  "MinSwingPct": [0.05],
+  "MinSwingPct_N": "A float (default: 0.08, or 8%) representing the minimum percentage change required between consecutive swing highs or lows to consider it a valid swing for labeling (e.g., HH, LH). This is only applied if ENABLE_MIN_SWING is True. False has to be identical",
+    
+  "TrendlineRange": [3],
+  "TrendlineRange_N": "DO NOT CHANGE. Uses the #HR prior to determine trendline direction: Sideways, Upward, Downward",
+  
+  "Entry": [2],
+  "Entry_N": "1 = Ordered (LH → LL → LH → LL or HL → HH → HL → HH), 2 = Mixed (LL → LL → LH → LH or HH → HH → HL → HH)",
+  "EntryCount": [1, 2],
+  "EntryCount_N": "1 = LH → LL, 2 = HH → HH → HL → HH",
+
+  "TargetDirection": [3],
+  "TargetDirection_N": "1 = Long, 2 = Short, 3= Both",
+  
+  "L_ProfitTargetPercent": [0.5, 0.75, 1, 1.25, 1.5],
+  "L_StopLossPercent": [-0.25, -0.5, -0.75, -1.0, -1.25, -1.5],
+
+  "S_ProfitTargetPercent": [0.5, 0.75, 1, 1.25, 1.5],
+  "S_StopLossPercent": [-0.25, -0.5, -0.75, -1.0, -1.25, -1.5],
+    
+  "LogLevel": "INFO",
+  "LogLevel_Comments": "A string (default: 'INFO', converted to uppercase) that sets the logging verbosity. Possible values include 'DEBUG', 'INFO', 'WARNING', 'ERROR', etc. It adjusts the detail level of log messages output to stdout."
+}

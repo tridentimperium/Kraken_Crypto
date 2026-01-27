@@ -1,0 +1,8 @@
+{
+  "SQL_Connection_Mode": "1",
+  "CLOUDAPI_Mode": "1",
+  "Symbol_ID": "KRAKEN_SPOT_BTC_USD",
+  "Timeframe": "1",
+  "StartDate": "2015-01-01",
+  "EndDate": "2025-12-31"
+}
