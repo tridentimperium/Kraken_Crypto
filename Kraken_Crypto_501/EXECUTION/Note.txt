@@ -1,0 +1,7 @@
+[ ] Article of Org with MD
+[ ] Mercury Bank Account connect with LLC
+[ ] Kraken connect with LLC
+
+[ ] CRITICAL: How fast can send order to Kraken and receive. 
+    1. Review the LIVE table per second
+    2. As soon as it crosses, send order

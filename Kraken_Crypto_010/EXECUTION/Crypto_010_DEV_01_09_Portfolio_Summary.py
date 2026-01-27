@@ -52,27 +52,20 @@ else:
         vars_config = json.load(f)
     logger.info("Loaded config from Crypto_010_variables.json (standalone)")
 
-# Extract IDs with defaults
 ANALYSIS_RUN_ID = int(vars_config.get("AnalysisRunID", 1))
-FETCH_RUN_ID = int(vars_config.get("FetchRunID", 1))
-
+FETCH_RUN_ID   = int(vars_config.get("FetchRunID", 1))
 logger.info(f"Using AnalysisRunID = {ANALYSIS_RUN_ID}, FetchRunID = {FETCH_RUN_ID}")
 
 # ================================
-# LOAD PARAMETERS FROM Crypto_010_parameters.json
+# LOAD PARAMETERS
 # ================================
 parameters_file = os.path.join(CONFIG_PATH, "ZZ_PARAMETERS", "Crypto_010_parameters.json")
 if not os.path.exists(parameters_file):
     logger.error(f"Parameters file not found: {parameters_file}")
     sys.exit(1)
 
-try:
-    with open(parameters_file, 'r', encoding='utf-8') as f:
-        params = json.load(f)
-    logger.info(f"Loaded parameters from {parameters_file}")
-except Exception as e:
-    logger.error(f"Failed to load parameters: {e}")
-    sys.exit(1)
+with open(parameters_file, 'r', encoding='utf-8') as f:
+    params = json.load(f)
 
 SYMBOL = params.get("Symbol_ID", "").strip().upper()
 if not SYMBOL:
@@ -94,17 +87,16 @@ if not os.path.exists(sql_env_file):
     sys.exit(1)
 
 load_dotenv(sql_env_file, encoding='utf-8')
-logger.info(f"Loaded SQL env: {sql_env_file}")
 
+conn_str = (
+    f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+    f"SERVER={os.getenv('SQL_SERVER')};"
+    f"DATABASE={os.getenv('SQL_DATABASE')};"
+    f"UID={os.getenv('SQL_USER')};"
+    f"PWD={os.getenv('SQL_PASSWORD')};"
+    f"TrustServerCertificate=yes;"
+)
 try:
-    conn_str = (
-        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-        f"SERVER={os.getenv('SQL_SERVER')};"
-        f"DATABASE={os.getenv('SQL_DATABASE')};"
-        f"UID={os.getenv('SQL_USER')};"
-        f"PWD={os.getenv('SQL_PASSWORD')};"
-        f"TrustServerCertificate=yes;"
-    )
     conn = pyodbc.connect(conn_str)
     cursor = conn.cursor()
     logger.info("Connected to SQL Server")
@@ -113,7 +105,7 @@ except Exception as e:
     sys.exit(1)
 
 # ================================
-# CREATE TARGET TABLE
+# CREATE TARGET TABLE (unchanged)
 # ================================
 create_target_sql = f'''
 IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'Crypto_010_DEV_01_09_Portfolio_Summary')
@@ -151,7 +143,7 @@ conn.commit()
 logger.info(f"Target table ensured: {TARGET_TABLE}")
 
 # ================================
-# LOAD AGGREGATED RESULTS
+# LOAD & CLEAN SOURCE DATA
 # ================================
 query = f"""
 SELECT 
@@ -166,56 +158,66 @@ SELECT
 FROM {SOURCE_TABLE}
 WHERE FetchRunID = ? AND AnalysisRunID = ?
 """
+
 try:
     df_source = pd.read_sql(query, conn, params=[FETCH_RUN_ID, ANALYSIS_RUN_ID])
-    logger.info(f"Loaded {len(df_source)} rows from {SOURCE_TABLE}.")
+    logger.info(f"Loaded {len(df_source)} rows from source table")
 except Exception as e:
-    logger.error(f"Failed to load analysis results: {e}")
+    logger.error(f"Failed to read source table: {e}")
     conn.close()
     sys.exit(1)
 
-# Always ensure we have one row per position (Long & Short)
+# ── Defensive cleaning ───────────────────────────────────────────────────────
+numeric_cols_float = ['Profit', 'Loss', 'PositionPL', 'ProfitPercentage', 'LossPercentage']
+numeric_cols_int   = ['ProfitExecutionNumber', 'LossExecutionNumber']
+
+for col in numeric_cols_float + numeric_cols_int:
+    if col in df_source.columns:
+        df_source[col] = pd.to_numeric(df_source[col], errors='coerce')
+
+df_source[numeric_cols_float] = df_source[numeric_cols_float].fillna(0.0)
+df_source[numeric_cols_int]   = df_source[numeric_cols_int].fillna(0).astype('int64')
+
+logger.info("After type coercion & fillna:\n" + df_source.dtypes.astype(str).to_string())
+
+# Always have both positions
 positions = ['Long', 'Short']
 df = pd.DataFrame({'Position': positions})
 
 if not df_source.empty:
-    # Aggregate in case there are multiple rows per position (though normally shouldn't be)
     df_agg = df_source.groupby('Position', as_index=False).agg({
         'ProfitExecutionNumber': 'sum',
         'LossExecutionNumber':   'sum',
         'Profit':                'sum',
         'Loss':                  'sum',
         'PositionPL':            'sum',
-        'ProfitPercentage':      'max',
-        'LossPercentage':        'max'
+        'ProfitPercentage':      'max',   # or 'mean' / 'last' depending on intent
+        'LossPercentage':        'max',
     })
     df = df.merge(df_agg, on='Position', how='left').fillna(0)
-    logger.info("Aggregated data per position:")
-    logger.info(df.to_string(index=False))
 else:
-    logger.warning("No data found in Results_Analysis → using zero values for both positions")
-    df['ProfitExecutionNumber'] = 0
-    df['LossExecutionNumber']   = 0
-    df['Profit']                = 0.0
-    df['Loss']                  = 0.0
-    df['PositionPL']            = 0.0
-    df['ProfitPercentage']      = 0.0
-    df['LossPercentage']        = 0.0
+    logger.warning("No source rows → all metrics zeroed")
+    for col in numeric_cols_float:
+        df[col] = 0.0
+    for col in numeric_cols_int:
+        df[col] = 0
 
-# Compute portfolio-level totals
+# Portfolio totals
 total_pl = df['PositionPL'].sum()
 ending_balance = round(STARTING_BALANCE + total_pl, 2)
-total_percentage_change = round(((ending_balance - STARTING_BALANCE) / STARTING_BALANCE * 100), 2) if STARTING_BALANCE != 0 else 0.0
-
+total_percentage_change = round(
+    ((ending_balance - STARTING_BALANCE) / STARTING_BALANCE * 100) if STARTING_BALANCE != 0 else 0.0,
+    2
+)
 total_trades = int(df['ProfitExecutionNumber'].sum() + df['LossExecutionNumber'].sum())
 
 # ================================
-# UPSERT USING MERGE
+# UPSERT
 # ================================
 merge_sql = f"""
 MERGE INTO {TARGET_TABLE} AS target
 USING (VALUES 
-    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ) AS source (
     FetchRunID, AnalysisRunID, Symbol, N001, TradeNumber, N002,
     StartingBalance, EndingBalance, PercentageChange, N003,
@@ -272,47 +274,58 @@ WHEN NOT MATCHED THEN
 
 for _, row in df.iterrows():
     position = row['Position']
-    
-    position_pl = round(float(row['PositionPL']), 2)
+
+    position_pl = round(float(row.get('PositionPL', 0.0)), 2)
     position_ending = round(STARTING_BALANCE + position_pl, 2)
-    position_pct_change = round(((position_ending - STARTING_BALANCE) / STARTING_BALANCE * 100), 2) if STARTING_BALANCE != 0 else 0.0
+    position_pct_change = round(
+        ((position_ending - STARTING_BALANCE) / STARTING_BALANCE * 100) if STARTING_BALANCE != 0 else 0.0,
+        2
+    )
 
     values = (
         int(FETCH_RUN_ID),
         int(ANALYSIS_RUN_ID),
         SYMBOL,
-        None,
+        None,                           # N001
         int(total_trades),
-        None,
+        None,                           # N002
         float(STARTING_BALANCE),
         float(ending_balance),
         float(total_percentage_change),
-        None,
+        None,                           # N003
         position,
-        None,
-        float(row['Profit']),
-        float(row['Loss']),
-        float(position_pl),
-        float(position_ending),
-        float(position_pct_change),
-        None,
-        int(row['ProfitExecutionNumber']),
-        int(row['LossExecutionNumber']),
-        None,
-        float(row['ProfitPercentage']),
-        float(row['LossPercentage'])
+        None,                           # N004
+        float(row.get('Profit', 0.0)),
+        float(row.get('Loss', 0.0)),
+        position_pl,
+        position_ending,
+        position_pct_change,
+        None,                           # N005
+        int(row.get('ProfitExecutionNumber', 0)),
+        int(row.get('LossExecutionNumber', 0)),
+        None,                           # N006
+        float(row.get('ProfitPercentage', 0.0)),
+        float(row.get('LossPercentage', 0.0))
     )
+
+    logger.debug(f"Upserting {position} | PL={position_pl:.2f} | values types: {[type(v).__name__ for v in values]}")
 
     try:
         cursor.execute(merge_sql, values)
+    except pyodbc.Error as e:
+        logger.error(f"MERGE failed for {position}: {e}")
+        logger.error(f"SQLSTATE: {e.args[0] if e.args else 'N/A'}")
+        conn.rollback()
+        conn.close()
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"MERGE failed for position {position}: {e}")
+        logger.error(f"Unexpected error during MERGE for {position}: {type(e).__name__}: {e}")
         conn.rollback()
         conn.close()
         sys.exit(1)
 
 conn.commit()
-logger.info(f"Successfully upserted portfolio summary rows (Long & Short) into {TARGET_TABLE}")
+logger.info(f"Upserted summary rows for {len(df)} positions")
 
 conn.close()
 logger.info("Portfolio Summary generation finished successfully.")
