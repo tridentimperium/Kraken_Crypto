@@ -81,7 +81,8 @@ def get_files_to_process(from_version, to_version):
         "EXECUTION/Crypto_{version}_DEV_01_07_Results_Analysis.py",
         "EXECUTION/Crypto_{version}_DEV_01_08_Portfolio_Balance.py",
         "EXECUTION/Crypto_{version}_DEV_01_09_Portfolio_Summary.py",
-        "EXECUTION/Crypto_{version}_DEV_01_10_Portfolio_Graph.py"
+        "EXECUTION/Crypto_{version}_DEV_01_10_Portfolio_Graph.py",
+        "EXECUTION/Crypto_{version}_DEV_01_11_Delete_Tables.py"
     ]
 
     # Replace the version placeholder in the file paths with the from_version and to_version
