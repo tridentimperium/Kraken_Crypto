@@ -1,0 +1,10 @@
+{
+  "SQL_Connection_Mode": "1",
+  "CLOUDAPI_Mode": "1",
+  "Symbol_ID": "KRAKEN_SPOT_ETH_USD",
+  "Timeframe": "1",
+  "StartDate": "2025-01-01",
+  "EndDate": "2025-12-31",
+  "StartingBalance": 200000.00,
+  "Leverage": "4"
+}
