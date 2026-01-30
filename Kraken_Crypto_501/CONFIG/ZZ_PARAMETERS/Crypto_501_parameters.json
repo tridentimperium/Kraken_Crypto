@@ -2,7 +2,8 @@
   "SQL_Connection_Mode": "1",
   "Symbol_ID": "KRAKEN_SPOT_ETH_USD",
   "Timeframe": "1",
-  "Kraken_Live_Data_HRs": "1",
+  "Live_Data_HRs_Coinbase": "1",
+  "Live_Data_HRs_Kraken": "1",
   "StartingBalance": 200000.00,
   "Leverage": "4"
 }

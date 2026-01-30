@@ -4,4 +4,13 @@
 
 [ ] CRITICAL: How fast can send order to Kraken and receive. 
     1. Review the LIVE table per second
+    2. LIVE data must feed the Analysis Result table every second O|H|L|C|V <<< This should trigger the Buy|Sell Signals
     2. As soon as it crosses, send order
+
+
+NOTE
+When x10 is done, forced liquidates happens at -6%. However, Stop loss at -n% prevents it. So its not topic of discussion
+
+
+YOU NEED TO SOLVE VOLUME PROBLEM
+Coinbase + Kraken?
