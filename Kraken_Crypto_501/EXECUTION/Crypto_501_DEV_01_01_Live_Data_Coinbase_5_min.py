@@ -52,7 +52,7 @@ if not symbol_id_raw or not isinstance(symbol_id_raw, str):
     logger.error("Symbol_ID is required and must be a string.")
     sys.exit(1)
 
-symbol_coinbase = symbol_id_raw.replace("KRAKEN_SPOT_", "").replace("_", "-")
+symbol_coinbase = symbol_id_raw.replace("/", "-")
 logger.info(f"Using Coinbase symbol: {symbol_coinbase}")
 
 keep_hours = int(params.get("Live_Data_HRs_Coinbase", 24))

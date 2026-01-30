@@ -1,9 +1,11 @@
-[ ] Article of Org with MD
-[ ] Mercury Bank Account connect with LLC
+[X] Article of Org with MD
+[X] Mercury Bank Account connect with LLC
+[X] Fund transfer
+[ ] Statement for Kraken
 [ ] Kraken connect with LLC
 
 [ ] CRITICAL: How fast can send order to Kraken and receive. 
-    1. Review the LIVE table per second
+    1. Review the LIVE table per second (Live data you get from Kraken only becuase its accurate by last minute. Coinbase is slow.)
     2. LIVE data must feed the Analysis Result table every second O|H|L|C|V <<< This should trigger the Buy|Sell Signals
     2. As soon as it crosses, send order
 

@@ -60,7 +60,7 @@ if not symbol_id_raw or not isinstance(symbol_id_raw, str):
     logger.error("Symbol_ID is required and must be a string.")
     sys.exit(1)
 
-symbol_kraken = symbol_id_raw.replace("KRAKEN_SPOT_", "").replace("_", "/")
+symbol_kraken = symbol_id_raw
 logger.info(f"Using Kraken symbol: {symbol_kraken}")
 
 if timeframe != "1":
