@@ -12,8 +12,9 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from urllib.parse import quote_plus
 
-# Suppress the pandas SQLAlchemy warning
+# Suppress the pandas SQLAlchemy warning - we're using pyodbc which works fine
 warnings.filterwarnings('ignore', message='.*SQLAlchemy connectable.*')
+warnings.filterwarnings('ignore', category=UserWarning, module='pandas')
 
 # ================================
 # LOGGING
@@ -237,53 +238,89 @@ except Exception as e:
 # HELPER FUNCTIONS FOR ANALYSIS
 # ================================
 def calculate_swing_points(df, lookback):
-    """Identify swing highs and lows"""
-    df['IsSwingHigh'] = False
-    df['IsSwingLow'] = False
-    df['SwingType'] = None
+    """Identify swing highs and lows - REAL-TIME VERSION (only looks backward)"""
+    high = df['High']
+    low = df['Low']
     
-    for i in range(lookback, len(df) - lookback):
-        window_before = df['High'].iloc[i - lookback:i]
-        window_after = df['High'].iloc[i + 1:i + lookback + 1]
-        if df['High'].iloc[i] == max(window_before.max(), df['High'].iloc[i], window_after.max()):
-            df.loc[df.index[i], 'IsSwingHigh'] = True
+    # Initialize with existing values if they exist, otherwise False
+    if 'IsSwingHigh' in df.columns:
+        is_swing_high = df['IsSwingHigh'].tolist()
+    else:
+        is_swing_high = [False] * len(df)
+    
+    if 'IsSwingLow' in df.columns:
+        is_swing_low = df['IsSwingLow'].tolist()
+    else:
+        is_swing_low = [False] * len(df)
+    
+    # Find the last swing indices from existing data
+    last_swing_high_idx = None
+    last_swing_low_idx = None
+    
+    for i in range(len(df)):
+        if is_swing_high[i]:
+            last_swing_high_idx = i
+        if is_swing_low[i]:
+            last_swing_low_idx = i
+    
+    # Only recalculate for rows that don't have swings yet or might be new
+    for i in range(lookback, len(df)):
+        # Only recalculate if this position doesn't already have a swing marked
+        if not is_swing_high[i]:
+            if high.iloc[i] >= high.iloc[i - lookback:i].max():
+                if last_swing_high_idx is None or (i - last_swing_high_idx) >= (lookback // 2):
+                    is_swing_high[i] = True
+                    last_swing_high_idx = i
         
-        window_before = df['Low'].iloc[i - lookback:i]
-        window_after = df['Low'].iloc[i + 1:i + lookback + 1]
-        if df['Low'].iloc[i] == min(window_before.min(), df['Low'].iloc[i], window_after.min()):
-            df.loc[df.index[i], 'IsSwingLow'] = True
+        if not is_swing_low[i]:
+            if low.iloc[i] <= low.iloc[i - lookback:i].min():
+                if last_swing_low_idx is None or (i - last_swing_low_idx) >= (lookback // 2):
+                    is_swing_low[i] = True
+                    last_swing_low_idx = i
+    
+    df['IsSwingHigh'] = is_swing_high
+    df['IsSwingLow'] = is_swing_low
+    
+    # Preserve existing SwingType if it exists
+    if 'SwingType' not in df.columns:
+        df['SwingType'] = None
     
     return df
 
-def assign_swing_types(df):
-    """Assign swing types (HH, HL, LH, LL)"""
-    swing_data = df[df['IsSwingHigh'] | df['IsSwingLow']].copy()
+def assign_swing_types(df, enable_min_swing, min_swing_pct):
+    """Assign swing types (HH, HL, LH, LL) with optional % filter"""
+    swing_highs = df[df['IsSwingHigh']].copy()
+    swing_lows = df[df['IsSwingLow']].copy()
     
-    for i in range(1, len(swing_data)):
-        prev_idx = swing_data.index[i - 1]
-        curr_idx = swing_data.index[i]
-        
-        if swing_data.loc[curr_idx, 'IsSwingHigh']:
-            if swing_data.loc[prev_idx, 'IsSwingLow']:
-                prev_low = df.loc[prev_idx, 'Low']
-                if i >= 2:
-                    prev_prev_idx = swing_data.index[i - 2]
-                    prev_prev_low = df.loc[prev_prev_idx, 'Low']
-                    if prev_low > prev_prev_low:
-                        df.loc[curr_idx, 'SwingType'] = 'HH'
-                    else:
-                        df.loc[curr_idx, 'SwingType'] = 'LH'
-        
-        elif swing_data.loc[curr_idx, 'IsSwingLow']:
-            if swing_data.loc[prev_idx, 'IsSwingHigh']:
-                prev_high = df.loc[prev_idx, 'High']
-                if i >= 2:
-                    prev_prev_idx = swing_data.index[i - 2]
-                    prev_prev_high = df.loc[prev_prev_idx, 'High']
-                    if prev_high > prev_prev_high:
-                        df.loc[curr_idx, 'SwingType'] = 'HL'
-                    else:
-                        df.loc[curr_idx, 'SwingType'] = 'LL'
+    prev_high = None
+    for idx in swing_highs.index:
+        current = swing_highs.loc[idx, 'High']
+        # Only recalculate if SwingType is not already set
+        if pd.isna(df.loc[idx, 'SwingType']):
+            if prev_high is None:
+                df.loc[idx, 'SwingType'] = None
+            else:
+                pct_change = (current - prev_high) / prev_high * 100
+                if enable_min_swing and abs(pct_change) < min_swing_pct:
+                    df.loc[idx, 'SwingType'] = None
+                else:
+                    df.loc[idx, 'SwingType'] = 'HH' if current > prev_high else 'LH'
+        prev_high = current
+    
+    prev_low = None
+    for idx in swing_lows.index:
+        current = swing_lows.loc[idx, 'Low']
+        # Only recalculate if SwingType is not already set
+        if pd.isna(df.loc[idx, 'SwingType']):
+            if prev_low is None:
+                df.loc[idx, 'SwingType'] = None
+            else:
+                pct_change = (prev_low - current) / prev_low * 100
+                if enable_min_swing and abs(pct_change) < min_swing_pct:
+                    df.loc[idx, 'SwingType'] = None
+                else:
+                    df.loc[idx, 'SwingType'] = 'LL' if current < prev_low else 'HL'
+        prev_low = current
     
     return df
 
@@ -386,28 +423,8 @@ def process_new_data(df_new, entry_str, target_direction):
     # Calculate swing points
     df_new = calculate_swing_points(df_new, LOOKBACK)
     
-    # Filter by minimum swing percentage if enabled
-    if ENABLE_MIN_SWING:
-        for idx in df_new[df_new['IsSwingHigh']].index:
-            high_price = df_new.loc[idx, 'High']
-            nearby_lows = df_new.loc[max(0, idx - LOOKBACK):idx, 'Low']
-            if not nearby_lows.empty:
-                min_low = nearby_lows.min()
-                pct_change = abs((high_price - min_low) / min_low * 100) if min_low > 0 else 0
-                if pct_change < MIN_SWING_PCT:
-                    df_new.loc[idx, 'IsSwingHigh'] = False
-        
-        for idx in df_new[df_new['IsSwingLow']].index:
-            low_price = df_new.loc[idx, 'Low']
-            nearby_highs = df_new.loc[max(0, idx - LOOKBACK):idx, 'High']
-            if not nearby_highs.empty:
-                max_high = nearby_highs.max()
-                pct_change = abs((max_high - low_price) / low_price * 100) if low_price > 0 else 0
-                if pct_change < MIN_SWING_PCT:
-                    df_new.loc[idx, 'IsSwingLow'] = False
-    
-    # Assign swing types
-    df_new = assign_swing_types(df_new)
+    # Assign swing types (includes MIN_SWING_PCT filter)
+    df_new = assign_swing_types(df_new, ENABLE_MIN_SWING, MIN_SWING_PCT)
     
     # Calculate trendline slope
     df_new = calculate_trendline_slope(df_new, TREND_LINE_RANGE)
@@ -458,30 +475,36 @@ def process_new_data(df_new, entry_str, target_direction):
 # UPSERT FUNCTION
 # ================================
 def insert_analysis_results(cursor, conn, df_results, last_processed_datetime):
-    """Upsert analysis results into the database (INSERT or UPDATE if exists)"""
-    """Returns: (total_rows, new_rows_info, updated_count)"""
+    """Upsert analysis results - ONLY OHLCV for old rows, full update for latest row"""
     
-    # First, get existing rows to compare for changes
+    # Get existing data to preserve signals and check for changes
     existing_datetimes = [idx for idx in df_results.index]
     existing_data = {}
     
     if existing_datetimes:
         placeholders = ','.join(['?'] * len(existing_datetimes))
         check_query = f"""
-        SELECT DateTime, [Open], [High], [Low], [Close], Volume
+        SELECT DateTime, [Open], [High], [Low], [Close], Volume,
+               IsSwingHigh, IsSwingLow, SwingType, BuySignal, SellSignal
         FROM {ANALYSIS_TABLE}
         WHERE DateTime IN ({placeholders})
         """
         cursor.execute(check_query, existing_datetimes)
         for row in cursor.fetchall():
             existing_data[row[0]] = {
-                'Open': row[1],
-                'High': row[2],
-                'Low': row[3],
-                'Close': row[4],
-                'Volume': row[5]
+                'Open': row[1], 'High': row[2], 'Low': row[3], 'Close': row[4], 'Volume': row[5],
+                'IsSwingHigh': row[6], 'IsSwingLow': row[7], 'SwingType': row[8],
+                'BuySignal': row[9], 'SellSignal': row[10]
             }
     
+    # SQL for OHLCV-only update (for old rows)
+    update_ohlcv_sql = f"""
+    UPDATE {ANALYSIS_TABLE}
+    SET [Open] = ?, [High] = ?, [Low] = ?, [Close] = ?, Volume = ?
+    WHERE DateTime = ? AND Symbol = ?
+    """
+    
+    # SQL for full MERGE (latest row + new rows)
     merge_sql = f"""
     MERGE {ANALYSIS_TABLE} AS target
     USING (SELECT ? AS DateTime_EST, ? AS DateTime, ? AS Timeframe, ? AS Symbol, ? AS [Open], ? AS [High], 
@@ -494,49 +517,18 @@ def insert_analysis_results(cursor, conn, df_results, last_processed_datetime):
                   ? AS ExitPrice, ? AS ExitCost, ? AS ProfitLoss, ? AS EndingBalance) AS source
     ON target.DateTime = source.DateTime AND target.Symbol = source.Symbol
     WHEN MATCHED THEN
-        UPDATE SET
-            DateTime_EST = source.DateTime_EST,
-            Timeframe = source.Timeframe,
-            [Open] = source.[Open],
-            [High] = source.[High],
-            [Low] = source.[Low],
-            [Close] = source.[Close],
-            Volume = source.Volume,
-            N001 = source.N001,
-            IsSwingHigh = source.IsSwingHigh,
-            IsSwingLow = source.IsSwingLow,
-            SwingType = source.SwingType,
-            Slope = source.Slope,
-            N002 = source.N002,
-            Trend = source.Trend,
-            N003 = source.N003,
-            Entry = source.Entry,
-            EntryCount = source.EntryCount,
-            TargetDirection = source.TargetDirection,
-            L_PTPercent = source.L_PTPercent,
-            L_SLPercent = source.L_SLPercent,
-            L_PTPrice = source.L_PTPrice,
-            L_SLPrice = source.L_SLPrice,
-            S_PTPercent = source.S_PTPercent,
-            S_SLPercent = source.S_SLPercent,
-            S_PTPrice = source.S_PTPrice,
-            S_SLPrice = source.S_SLPrice,
-            N004 = source.N004,
-            EntryExit = source.EntryExit,
-            BuySignal = source.BuySignal,
-            SellSignal = source.SellSignal,
-            LongShort = source.LongShort,
-            InTrade = source.InTrade,
-            N005 = source.N005,
-            StartingBalance = source.StartingBalance,
-            Leverage = source.Leverage,
-            Quantity = source.Quantity,
-            EntryPrice = source.EntryPrice,
-            EntryCost = source.EntryCost,
-            ExitPrice = source.ExitPrice,
-            ExitCost = source.ExitCost,
-            ProfitLoss = source.ProfitLoss,
-            EndingBalance = source.EndingBalance
+        UPDATE SET DateTime_EST=source.DateTime_EST, Timeframe=source.Timeframe,
+            [Open]=source.[Open], [High]=source.[High], [Low]=source.[Low], [Close]=source.[Close], Volume=source.Volume,
+            N001=source.N001, IsSwingHigh=source.IsSwingHigh, IsSwingLow=source.IsSwingLow, SwingType=source.SwingType,
+            Slope=source.Slope, N002=source.N002, Trend=source.Trend, N003=source.N003, Entry=source.Entry,
+            EntryCount=source.EntryCount, TargetDirection=source.TargetDirection, L_PTPercent=source.L_PTPercent,
+            L_SLPercent=source.L_SLPercent, L_PTPrice=source.L_PTPrice, L_SLPrice=source.L_SLPrice,
+            S_PTPercent=source.S_PTPercent, S_SLPercent=source.S_SLPercent, S_PTPrice=source.S_PTPrice,
+            S_SLPrice=source.S_SLPrice, N004=source.N004, EntryExit=source.EntryExit, BuySignal=source.BuySignal,
+            SellSignal=source.SellSignal, LongShort=source.LongShort, InTrade=source.InTrade, N005=source.N005,
+            StartingBalance=source.StartingBalance, Leverage=source.Leverage, Quantity=source.Quantity,
+            EntryPrice=source.EntryPrice, EntryCost=source.EntryCost, ExitPrice=source.ExitPrice,
+            ExitCost=source.ExitCost, ProfitLoss=source.ProfitLoss, EndingBalance=source.EndingBalance
     WHEN NOT MATCHED THEN
         INSERT (DateTime_EST, DateTime, Timeframe, Symbol, [Open], [High], [Low], [Close], Volume, N001,
                 IsSwingHigh, IsSwingLow, SwingType, Slope, N002, Trend, N003, Entry, EntryCount, TargetDirection,
@@ -556,82 +548,134 @@ def insert_analysis_results(cursor, conn, df_results, last_processed_datetime):
     rows = 0
     new_rows = []
     updated_count = 0
+    latest_row_idx = df_results.index[-1] if not df_results.empty else None
     
     try:
         for idx, row in df_results.iterrows():
-            # Check if this row is new (DateTime > last_processed_datetime)
             is_new = last_processed_datetime is None or idx > last_processed_datetime
+            is_latest = (idx == latest_row_idx)
             
-            # Check if values actually changed for existing rows
+            # Check for OHLCV changes
             values_changed = False
             if idx in existing_data:
                 old = existing_data[idx]
-                new_open = None if pd.isna(row['Open']) else float(row['Open'])
-                new_high = None if pd.isna(row['High']) else float(row['High'])
-                new_low = None if pd.isna(row['Low']) else float(row['Low'])
-                new_close = None if pd.isna(row['Close']) else float(row['Close'])
-                new_volume = None if pd.isna(row['Volume']) else float(row['Volume'])
-                
-                if (old['Open'] != new_open or 
-                    old['High'] != new_high or 
-                    old['Low'] != new_low or 
-                    old['Close'] != new_close or 
-                    old['Volume'] != new_volume):
+                if (old['Open'] != (None if pd.isna(row['Open']) else float(row['Open'])) or
+                    old['High'] != (None if pd.isna(row['High']) else float(row['High'])) or
+                    old['Low'] != (None if pd.isna(row['Low']) else float(row['Low'])) or
+                    old['Close'] != (None if pd.isna(row['Close']) else float(row['Close'])) or
+                    old['Volume'] != (None if pd.isna(row['Volume']) else float(row['Volume']))):
                     values_changed = True
             
-            cursor.execute(merge_sql,
-                row['DateTime_EST'],
-                idx,
-                row['Timeframe'], row['Symbol'],
-                None if pd.isna(row['Open']) else float(row['Open']),
-                None if pd.isna(row['High']) else float(row['High']),
-                None if pd.isna(row['Low']) else float(row['Low']),
-                None if pd.isna(row['Close']) else float(row['Close']),
-                None if pd.isna(row['Volume']) else float(row['Volume']),
-                None if pd.isna(row.get('N001', np.nan)) else float(row['N001']),
-                1 if row['IsSwingHigh'] else 0,
-                1 if row['IsSwingLow'] else 0,
-                row['SwingType'] if pd.notna(row['SwingType']) else None,
-                None if pd.isna(row['Slope']) else float(row['Slope']),
-                None if pd.isna(row.get('N002', np.nan)) else float(row['N002']),
-                row['Trend'],
-                None if pd.isna(row.get('N003', np.nan)) else float(row['N003']),
-                row['Entry'] if pd.notna(row.get('Entry', np.nan)) else None,
-                None if pd.isna(row.get('EntryCount', np.nan)) else int(row['EntryCount']),
-                row['TargetDirection'] if pd.notna(row.get('TargetDirection', np.nan)) else None,
-                None if pd.isna(row.get('L_PTPercent', np.nan)) else round(float(row['L_PTPercent']), 2),
-                None if pd.isna(row.get('L_SLPercent', np.nan)) else round(float(row['L_SLPercent']), 2),
-                None if pd.isna(row.get('L_PTPrice', np.nan)) else float(row['L_PTPrice']),
-                None if pd.isna(row.get('L_SLPrice', np.nan)) else float(row['L_SLPrice']),
-                None if pd.isna(row.get('S_PTPercent', np.nan)) else round(float(row['S_PTPercent']), 2),
-                None if pd.isna(row.get('S_SLPercent', np.nan)) else round(float(row['S_SLPercent']), 2),
-                None if pd.isna(row.get('S_PTPrice', np.nan)) else float(row['S_PTPrice']),
-                None if pd.isna(row.get('S_SLPrice', np.nan)) else float(row['S_SLPrice']),
-                None if pd.isna(row.get('N004', np.nan)) else float(row['N004']),
-                None if pd.isna(row.get('EntryExit', np.nan)) else float(row['EntryExit']),
-                1 if row['BuySignal'] else 0,
-                1 if row['SellSignal'] else 0,
-                row['LongShort'] if pd.notna(row.get('LongShort')) else None,
-                1 if row['InTrade'] else 0,
-                None if pd.isna(row.get('N005', np.nan)) else float(row['N005']),
-                None if pd.isna(row.get('StartingBalance', np.nan)) else float(row['StartingBalance']),
-                None if pd.isna(row.get('Leverage', np.nan)) else float(row['Leverage']),
-                None if pd.isna(row.get('Quantity', np.nan)) else float(row['Quantity']),
-                None if pd.isna(row.get('EntryPrice', np.nan)) else float(row['EntryPrice']),
-                None if pd.isna(row.get('EntryCost', np.nan)) else float(row['EntryCost']),
-                None if pd.isna(row.get('ExitPrice', np.nan)) else float(row['ExitPrice']),
-                None if pd.isna(row.get('ExitCost', np.nan)) else float(row['ExitCost']),
-                None if pd.isna(row.get('ProfitLoss', np.nan)) else float(row['ProfitLoss']),
-                None if pd.isna(row.get('EndingBalance', np.nan)) else float(row['EndingBalance'])
-            )
-            rows += 1
-            
-            # Track if this was a new row or actual update
             if is_new:
+                # NEW ROW - full insert
+                cursor.execute(merge_sql,
+                    row['DateTime_EST'], idx, row['Timeframe'], row['Symbol'],
+                    None if pd.isna(row['Open']) else float(row['Open']),
+                    None if pd.isna(row['High']) else float(row['High']),
+                    None if pd.isna(row['Low']) else float(row['Low']),
+                    None if pd.isna(row['Close']) else float(row['Close']),
+                    None if pd.isna(row['Volume']) else float(row['Volume']),
+                    None if pd.isna(row.get('N001', np.nan)) else float(row['N001']),
+                    1 if row['IsSwingHigh'] else 0, 1 if row['IsSwingLow'] else 0,
+                    row['SwingType'] if pd.notna(row['SwingType']) else None,
+                    None if pd.isna(row['Slope']) else float(row['Slope']),
+                    None if pd.isna(row.get('N002', np.nan)) else float(row['N002']),
+                    row['Trend'], None if pd.isna(row.get('N003', np.nan)) else float(row['N003']),
+                    row['Entry'] if pd.notna(row.get('Entry', np.nan)) else None,
+                    None if pd.isna(row.get('EntryCount', np.nan)) else int(row['EntryCount']),
+                    row['TargetDirection'] if pd.notna(row.get('TargetDirection', np.nan)) else None,
+                    None if pd.isna(row.get('L_PTPercent', np.nan)) else round(float(row['L_PTPercent']), 2),
+                    None if pd.isna(row.get('L_SLPercent', np.nan)) else round(float(row['L_SLPercent']), 2),
+                    None if pd.isna(row.get('L_PTPrice', np.nan)) else float(row['L_PTPrice']),
+                    None if pd.isna(row.get('L_SLPrice', np.nan)) else float(row['L_SLPrice']),
+                    None if pd.isna(row.get('S_PTPercent', np.nan)) else round(float(row['S_PTPercent']), 2),
+                    None if pd.isna(row.get('S_SLPercent', np.nan)) else round(float(row['S_SLPercent']), 2),
+                    None if pd.isna(row.get('S_PTPrice', np.nan)) else float(row['S_PTPrice']),
+                    None if pd.isna(row.get('S_SLPrice', np.nan)) else float(row['S_SLPrice']),
+                    None if pd.isna(row.get('N004', np.nan)) else float(row['N004']),
+                    None if pd.isna(row.get('EntryExit', np.nan)) else float(row['EntryExit']),
+                    1 if row['BuySignal'] else 0, 1 if row['SellSignal'] else 0,
+                    row['LongShort'] if pd.notna(row.get('LongShort')) else None,
+                    1 if row['InTrade'] else 0, None if pd.isna(row.get('N005', np.nan)) else float(row['N005']),
+                    None if pd.isna(row.get('StartingBalance', np.nan)) else float(row['StartingBalance']),
+                    None if pd.isna(row.get('Leverage', np.nan)) else float(row['Leverage']),
+                    None if pd.isna(row.get('Quantity', np.nan)) else float(row['Quantity']),
+                    None if pd.isna(row.get('EntryPrice', np.nan)) else float(row['EntryPrice']),
+                    None if pd.isna(row.get('EntryCost', np.nan)) else float(row['EntryCost']),
+                    None if pd.isna(row.get('ExitPrice', np.nan)) else float(row['ExitPrice']),
+                    None if pd.isna(row.get('ExitCost', np.nan)) else float(row['ExitCost']),
+                    None if pd.isna(row.get('ProfitLoss', np.nan)) else float(row['ProfitLoss']),
+                    None if pd.isna(row.get('EndingBalance', np.nan)) else float(row['EndingBalance'])
+                )
+                rows += 1
                 new_rows.append((idx, row['DateTime_EST']))
-            elif values_changed:
-                updated_count += 1
+            elif is_latest:
+                # LATEST ROW - full update with signal preservation
+                old = existing_data.get(idx, {})
+                swing_high = 1 if (old.get('IsSwingHigh') == 1 or row['IsSwingHigh']) else 0
+                swing_low = 1 if (old.get('IsSwingLow') == 1 or row['IsSwingLow']) else 0
+                buy_sig = 1 if (old.get('BuySignal') == 1 or row['BuySignal']) else 0
+                sell_sig = 1 if (old.get('SellSignal') == 1 or row['SellSignal']) else 0
+                # SwingType: once set, never changes
+                swing_type = old.get('SwingType') if old.get('SwingType') is not None else (row['SwingType'] if pd.notna(row['SwingType']) else None)
                 
+                cursor.execute(merge_sql,
+                    row['DateTime_EST'], idx, row['Timeframe'], row['Symbol'],
+                    None if pd.isna(row['Open']) else float(row['Open']),
+                    None if pd.isna(row['High']) else float(row['High']),
+                    None if pd.isna(row['Low']) else float(row['Low']),
+                    None if pd.isna(row['Close']) else float(row['Close']),
+                    None if pd.isna(row['Volume']) else float(row['Volume']),
+                    None if pd.isna(row.get('N001', np.nan)) else float(row['N001']),
+                    swing_high, swing_low,  # PRESERVED
+                    swing_type,  # PRESERVED - once set, never changes
+                    None if pd.isna(row['Slope']) else float(row['Slope']),  # CAN CHANGE
+                    None if pd.isna(row.get('N002', np.nan)) else float(row['N002']),
+                    row['Trend'],  # CAN CHANGE
+                    None if pd.isna(row.get('N003', np.nan)) else float(row['N003']),
+                    row['Entry'] if pd.notna(row.get('Entry', np.nan)) else None,
+                    None if pd.isna(row.get('EntryCount', np.nan)) else int(row['EntryCount']),
+                    row['TargetDirection'] if pd.notna(row.get('TargetDirection', np.nan)) else None,
+                    None if pd.isna(row.get('L_PTPercent', np.nan)) else round(float(row['L_PTPercent']), 2),
+                    None if pd.isna(row.get('L_SLPercent', np.nan)) else round(float(row['L_SLPercent']), 2),
+                    None if pd.isna(row.get('L_PTPrice', np.nan)) else float(row['L_PTPrice']),
+                    None if pd.isna(row.get('L_SLPrice', np.nan)) else float(row['L_SLPrice']),
+                    None if pd.isna(row.get('S_PTPercent', np.nan)) else round(float(row['S_PTPercent']), 2),
+                    None if pd.isna(row.get('S_SLPercent', np.nan)) else round(float(row['S_SLPercent']), 2),
+                    None if pd.isna(row.get('S_PTPrice', np.nan)) else float(row['S_PTPrice']),
+                    None if pd.isna(row.get('S_SLPrice', np.nan)) else float(row['S_SLPrice']),
+                    None if pd.isna(row.get('N004', np.nan)) else float(row['N004']),
+                    None if pd.isna(row.get('EntryExit', np.nan)) else float(row['EntryExit']),
+                    buy_sig, sell_sig,  # PRESERVED
+                    row['LongShort'] if pd.notna(row.get('LongShort')) else None,
+                    1 if row['InTrade'] else 0, None if pd.isna(row.get('N005', np.nan)) else float(row['N005']),
+                    None if pd.isna(row.get('StartingBalance', np.nan)) else float(row['StartingBalance']),
+                    None if pd.isna(row.get('Leverage', np.nan)) else float(row['Leverage']),
+                    None if pd.isna(row.get('Quantity', np.nan)) else float(row['Quantity']),
+                    None if pd.isna(row.get('EntryPrice', np.nan)) else float(row['EntryPrice']),
+                    None if pd.isna(row.get('EntryCost', np.nan)) else float(row['EntryCost']),
+                    None if pd.isna(row.get('ExitPrice', np.nan)) else float(row['ExitPrice']),
+                    None if pd.isna(row.get('ExitCost', np.nan)) else float(row['ExitCost']),
+                    None if pd.isna(row.get('ProfitLoss', np.nan)) else float(row['ProfitLoss']),
+                    None if pd.isna(row.get('EndingBalance', np.nan)) else float(row['EndingBalance'])
+                )
+                rows += 1
+                if values_changed:
+                    updated_count += 1
+            else:
+                # OLD ROW - OHLCV only
+                cursor.execute(update_ohlcv_sql,
+                    None if pd.isna(row['Open']) else float(row['Open']),
+                    None if pd.isna(row['High']) else float(row['High']),
+                    None if pd.isna(row['Low']) else float(row['Low']),
+                    None if pd.isna(row['Close']) else float(row['Close']),
+                    None if pd.isna(row['Volume']) else float(row['Volume']),
+                    idx, row['Symbol']
+                )
+                rows += 1
+                if values_changed:
+                    updated_count += 1
+        
         conn.commit()
         return rows, new_rows, updated_count
     except Exception as e:
@@ -668,12 +712,23 @@ logger.info("Starting live data processing loop. Press Ctrl+C to stop.")
 try:
     while True:
         try:
-            # Query for new data
-            # Since source table does UPSERT on the last 5 rows, we need to get:
-            # 1. The last 5 processed rows (they may have been updated)
-            # 2. Any newer rows
+            # Query for new data from LIVE table AND historical analysis results
             if last_processed_datetime:
-                query = f"""
+                # Get historical analysis results for context
+                historical_query = f"""
+                SELECT TOP {max(LOOKBACK * 3, TREND_LINE_RANGE + 10)}
+                       DateTime, DateTime_EST, Timeframe, Symbol, [Open], [High], [Low], [Close], Volume,
+                       IsSwingHigh, IsSwingLow, SwingType, Slope, Trend
+                FROM {ANALYSIS_TABLE}
+                WHERE DateTime < ?
+                ORDER BY DateTime DESC
+                """
+                df_historical = pd.read_sql(historical_query, conn, params=[last_processed_datetime])
+                df_historical = df_historical.iloc[::-1]  # Reverse to chronological order
+                df_historical.set_index('DateTime', inplace=True)
+                
+                # Get new/updated data from live table (last 5 + any newer)
+                live_query = f"""
                 SELECT DateTime, DateTime_EST, Timeframe, Symbol, [Open], [High], [Low], [Close], Volume
                 FROM {LIVE_DATA_TABLE}
                 WHERE DateTime >= (
@@ -686,51 +741,55 @@ try:
                 )
                 ORDER BY DateTime
                 """
-                df_new = pd.read_sql(query, conn, params=[last_processed_datetime])
+                df_live = pd.read_sql(live_query, conn, params=[last_processed_datetime])
+                df_live.set_index('DateTime', inplace=True)
+                
+                # Combine: start with historical, then update/add from live
+                df_new = df_historical.copy()
+                
+                for idx in df_live.index:
+                    if idx in df_new.index:
+                        # Update existing row with new OHLCV
+                        df_new.loc[idx, ['DateTime_EST', 'Timeframe', 'Symbol', 'Open', 'High', 'Low', 'Close', 'Volume']] = \
+                            df_live.loc[idx, ['DateTime_EST', 'Timeframe', 'Symbol', 'Open', 'High', 'Low', 'Close', 'Volume']]
+                    else:
+                        # New row - add it with just OHLCV data
+                        new_row = df_live.loc[[idx]].copy()
+                        # Add missing columns
+                        new_row['IsSwingHigh'] = False
+                        new_row['IsSwingLow'] = False
+                        new_row['SwingType'] = None
+                        new_row['Slope'] = np.nan
+                        new_row['Trend'] = None
+                        df_new = pd.concat([df_new, new_row])
+                
+                df_new = df_new.sort_index()
             else:
-                # First run - get all data or get recent data with a lookback window
+                # First run - get all data
                 query = f"""
                 SELECT DateTime, DateTime_EST, Timeframe, Symbol, [Open], [High], [Low], [Close], Volume
                 FROM {LIVE_DATA_TABLE}
                 ORDER BY DateTime
                 """
                 df_new = pd.read_sql(query, conn)
+                df_new.set_index('DateTime', inplace=True)
             
             if not df_new.empty:
                 
-                # Set DateTime as index
-                df_new.set_index('DateTime', inplace=True)
-                
-                # For proper analysis, we need historical context
-                # Get a window of data including lookback period
-                if last_processed_datetime:
-                    # Get some historical data for context
-                    historical_query = f"""
-                    SELECT TOP {LOOKBACK * 2 + TREND_LINE_RANGE} DateTime, DateTime_EST, Timeframe, Symbol, [Open], [High], [Low], [Close], Volume
-                    FROM {LIVE_DATA_TABLE}
-                    WHERE DateTime <= ?
-                    ORDER BY DateTime DESC
-                    """
-                    df_historical = pd.read_sql(historical_query, conn, params=[last_processed_datetime])
-                    df_historical = df_historical.iloc[::-1]  # Reverse to chronological order
-                    df_historical.set_index('DateTime', inplace=True)
-                    
-                    # Combine historical and new data
-                    df_combined = pd.concat([df_historical, df_new])
-                else:
-                    df_combined = df_new
-                
-                # Process the combined data
-                df_processed = process_new_data(df_combined, entry_str, target_direction_str)
+                # Process the data
+                df_processed = process_new_data(df_new, entry_str, target_direction_str)
                 
                 # Extract rows for upsert
                 # Include the last 5 processed rows (they may have been updated) and any newer rows
                 if last_processed_datetime:
                     # Get the 5th row back from last_processed_datetime
                     all_datetimes = sorted(df_processed.index)
-                    last_idx = all_datetimes.index(last_processed_datetime) if last_processed_datetime in all_datetimes else -1
-                    start_idx = max(0, last_idx - 4)  # Go back 4 rows (total of 5 including current)
-                    cutoff_datetime = all_datetimes[start_idx] if start_idx >= 0 else all_datetimes[0]
+                    if last_processed_datetime in all_datetimes:
+                        last_idx = all_datetimes.index(last_processed_datetime)
+                        start_idx = max(0, last_idx - 4)  # Go back 4 rows (total of 5 including current)
+                        cutoff_datetime = all_datetimes[start_idx]
+                    else:
+                        cutoff_datetime = all_datetimes[0]
                     df_to_insert = df_processed[df_processed.index >= cutoff_datetime]
                 else:
                     df_to_insert = df_processed
