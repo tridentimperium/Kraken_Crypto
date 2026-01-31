@@ -9,6 +9,8 @@
     2. LIVE data must feed the Analysis Result table every second O|H|L|C|V <<< This should trigger the Buy|Sell Signals
     2. As soon as it crosses, send order
 
+[ ] Archive of Analysis
+[ ] Archive of historical data?
 
 NOTE
 When x10 is done, forced liquidates happens at -6%. However, Stop loss at -n% prevents it. So its not topic of discussion

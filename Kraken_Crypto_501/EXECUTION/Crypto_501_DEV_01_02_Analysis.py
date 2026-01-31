@@ -93,7 +93,7 @@ TREND_LINE_RANGE = _get_val("TrendlineRange", 24, int)
 LOG_LEVEL = _get_val("LogLevel", "INFO", str).upper()
 
 # Polling interval in seconds (how often to check for new data)
-POLL_INTERVAL = _get_val("PollInterval", 10, int)
+POLL_INTERVAL = _get_val("PollInterval", 1, int)
 
 logging.getLogger().setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
@@ -455,25 +455,131 @@ def process_new_data(df_new, entry_str, target_direction):
     return df_new
 
 # ================================
-# INSERT FUNCTION
+# UPSERT FUNCTION
 # ================================
-def insert_analysis_results(cursor, conn, df_results):
-    """Insert analysis results into the database"""
-    insert_sql = f"""
-    INSERT INTO {ANALYSIS_TABLE}
-    (DateTime_EST, DateTime, Timeframe, Symbol, [Open], [High], [Low], [Close], Volume, N001,
-     IsSwingHigh, IsSwingLow, SwingType, Slope, N002, Trend, N003, Entry, EntryCount, TargetDirection,
-     L_PTPercent, L_SLPercent, L_PTPrice, L_SLPrice, S_PTPercent, S_SLPercent, S_PTPrice, S_SLPrice,
-     N004, EntryExit,
-     BuySignal, SellSignal, LongShort, InTrade, N005,
-     StartingBalance, Leverage, Quantity, EntryPrice, EntryCost, ExitPrice, ExitCost, ProfitLoss, EndingBalance)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+def insert_analysis_results(cursor, conn, df_results, last_processed_datetime):
+    """Upsert analysis results into the database (INSERT or UPDATE if exists)"""
+    """Returns: (total_rows, new_rows_info, updated_count)"""
+    
+    # First, get existing rows to compare for changes
+    existing_datetimes = [idx for idx in df_results.index]
+    existing_data = {}
+    
+    if existing_datetimes:
+        placeholders = ','.join(['?'] * len(existing_datetimes))
+        check_query = f"""
+        SELECT DateTime, [Open], [High], [Low], [Close], Volume
+        FROM {ANALYSIS_TABLE}
+        WHERE DateTime IN ({placeholders})
+        """
+        cursor.execute(check_query, existing_datetimes)
+        for row in cursor.fetchall():
+            existing_data[row[0]] = {
+                'Open': row[1],
+                'High': row[2],
+                'Low': row[3],
+                'Close': row[4],
+                'Volume': row[5]
+            }
+    
+    merge_sql = f"""
+    MERGE {ANALYSIS_TABLE} AS target
+    USING (SELECT ? AS DateTime_EST, ? AS DateTime, ? AS Timeframe, ? AS Symbol, ? AS [Open], ? AS [High], 
+                  ? AS [Low], ? AS [Close], ? AS Volume, ? AS N001, ? AS IsSwingHigh, ? AS IsSwingLow,
+                  ? AS SwingType, ? AS Slope, ? AS N002, ? AS Trend, ? AS N003, ? AS Entry, ? AS EntryCount,
+                  ? AS TargetDirection, ? AS L_PTPercent, ? AS L_SLPercent, ? AS L_PTPrice, ? AS L_SLPrice,
+                  ? AS S_PTPercent, ? AS S_SLPercent, ? AS S_PTPrice, ? AS S_SLPrice, ? AS N004, ? AS EntryExit,
+                  ? AS BuySignal, ? AS SellSignal, ? AS LongShort, ? AS InTrade, ? AS N005,
+                  ? AS StartingBalance, ? AS Leverage, ? AS Quantity, ? AS EntryPrice, ? AS EntryCost,
+                  ? AS ExitPrice, ? AS ExitCost, ? AS ProfitLoss, ? AS EndingBalance) AS source
+    ON target.DateTime = source.DateTime AND target.Symbol = source.Symbol
+    WHEN MATCHED THEN
+        UPDATE SET
+            DateTime_EST = source.DateTime_EST,
+            Timeframe = source.Timeframe,
+            [Open] = source.[Open],
+            [High] = source.[High],
+            [Low] = source.[Low],
+            [Close] = source.[Close],
+            Volume = source.Volume,
+            N001 = source.N001,
+            IsSwingHigh = source.IsSwingHigh,
+            IsSwingLow = source.IsSwingLow,
+            SwingType = source.SwingType,
+            Slope = source.Slope,
+            N002 = source.N002,
+            Trend = source.Trend,
+            N003 = source.N003,
+            Entry = source.Entry,
+            EntryCount = source.EntryCount,
+            TargetDirection = source.TargetDirection,
+            L_PTPercent = source.L_PTPercent,
+            L_SLPercent = source.L_SLPercent,
+            L_PTPrice = source.L_PTPrice,
+            L_SLPrice = source.L_SLPrice,
+            S_PTPercent = source.S_PTPercent,
+            S_SLPercent = source.S_SLPercent,
+            S_PTPrice = source.S_PTPrice,
+            S_SLPrice = source.S_SLPrice,
+            N004 = source.N004,
+            EntryExit = source.EntryExit,
+            BuySignal = source.BuySignal,
+            SellSignal = source.SellSignal,
+            LongShort = source.LongShort,
+            InTrade = source.InTrade,
+            N005 = source.N005,
+            StartingBalance = source.StartingBalance,
+            Leverage = source.Leverage,
+            Quantity = source.Quantity,
+            EntryPrice = source.EntryPrice,
+            EntryCost = source.EntryCost,
+            ExitPrice = source.ExitPrice,
+            ExitCost = source.ExitCost,
+            ProfitLoss = source.ProfitLoss,
+            EndingBalance = source.EndingBalance
+    WHEN NOT MATCHED THEN
+        INSERT (DateTime_EST, DateTime, Timeframe, Symbol, [Open], [High], [Low], [Close], Volume, N001,
+                IsSwingHigh, IsSwingLow, SwingType, Slope, N002, Trend, N003, Entry, EntryCount, TargetDirection,
+                L_PTPercent, L_SLPercent, L_PTPrice, L_SLPrice, S_PTPercent, S_SLPercent, S_PTPrice, S_SLPrice,
+                N004, EntryExit, BuySignal, SellSignal, LongShort, InTrade, N005,
+                StartingBalance, Leverage, Quantity, EntryPrice, EntryCost, ExitPrice, ExitCost, ProfitLoss, EndingBalance)
+        VALUES (source.DateTime_EST, source.DateTime, source.Timeframe, source.Symbol, source.[Open], source.[High],
+                source.[Low], source.[Close], source.Volume, source.N001, source.IsSwingHigh, source.IsSwingLow,
+                source.SwingType, source.Slope, source.N002, source.Trend, source.N003, source.Entry, source.EntryCount,
+                source.TargetDirection, source.L_PTPercent, source.L_SLPercent, source.L_PTPrice, source.L_SLPrice,
+                source.S_PTPercent, source.S_SLPercent, source.S_PTPrice, source.S_SLPrice, source.N004, source.EntryExit,
+                source.BuySignal, source.SellSignal, source.LongShort, source.InTrade, source.N005,
+                source.StartingBalance, source.Leverage, source.Quantity, source.EntryPrice, source.EntryCost,
+                source.ExitPrice, source.ExitCost, source.ProfitLoss, source.EndingBalance);
     """
     
     rows = 0
+    new_rows = []
+    updated_count = 0
+    
     try:
         for idx, row in df_results.iterrows():
-            cursor.execute(insert_sql,
+            # Check if this row is new (DateTime > last_processed_datetime)
+            is_new = last_processed_datetime is None or idx > last_processed_datetime
+            
+            # Check if values actually changed for existing rows
+            values_changed = False
+            if idx in existing_data:
+                old = existing_data[idx]
+                new_open = None if pd.isna(row['Open']) else float(row['Open'])
+                new_high = None if pd.isna(row['High']) else float(row['High'])
+                new_low = None if pd.isna(row['Low']) else float(row['Low'])
+                new_close = None if pd.isna(row['Close']) else float(row['Close'])
+                new_volume = None if pd.isna(row['Volume']) else float(row['Volume'])
+                
+                if (old['Open'] != new_open or 
+                    old['High'] != new_high or 
+                    old['Low'] != new_low or 
+                    old['Close'] != new_close or 
+                    old['Volume'] != new_volume):
+                    values_changed = True
+            
+            cursor.execute(merge_sql,
                 row['DateTime_EST'],
                 idx,
                 row['Timeframe'], row['Symbol'],
@@ -519,13 +625,19 @@ def insert_analysis_results(cursor, conn, df_results):
                 None if pd.isna(row.get('EndingBalance', np.nan)) else float(row['EndingBalance'])
             )
             rows += 1
+            
+            # Track if this was a new row or actual update
+            if is_new:
+                new_rows.append((idx, row['DateTime_EST']))
+            elif values_changed:
+                updated_count += 1
+                
         conn.commit()
-        logger.info(f"Inserted {rows} new rows")
-        return rows
+        return rows, new_rows, updated_count
     except Exception as e:
-        logger.error(f"Insert failed: {e}")
+        logger.error(f"Upsert failed: {e}")
         conn.rollback()
-        return 0
+        return 0, [], 0
 
 # ================================
 # MAIN PROCESSING LOOP
@@ -557,11 +669,21 @@ try:
     while True:
         try:
             # Query for new data
+            # Since source table does UPSERT on the last 5 rows, we need to get:
+            # 1. The last 5 processed rows (they may have been updated)
+            # 2. Any newer rows
             if last_processed_datetime:
                 query = f"""
                 SELECT DateTime, DateTime_EST, Timeframe, Symbol, [Open], [High], [Low], [Close], Volume
                 FROM {LIVE_DATA_TABLE}
-                WHERE DateTime > ?
+                WHERE DateTime >= (
+                    SELECT MIN(DateTime) FROM (
+                        SELECT TOP 5 DateTime 
+                        FROM {LIVE_DATA_TABLE}
+                        WHERE DateTime <= ?
+                        ORDER BY DateTime DESC
+                    ) AS Last5
+                )
                 ORDER BY DateTime
                 """
                 df_new = pd.read_sql(query, conn, params=[last_processed_datetime])
@@ -575,7 +697,6 @@ try:
                 df_new = pd.read_sql(query, conn)
             
             if not df_new.empty:
-                logger.info(f"Found {len(df_new)} new rows to process")
                 
                 # Set DateTime as index
                 df_new.set_index('DateTime', inplace=True)
@@ -602,21 +723,35 @@ try:
                 # Process the combined data
                 df_processed = process_new_data(df_combined, entry_str, target_direction_str)
                 
-                # Extract only the new rows for insertion
+                # Extract rows for upsert
+                # Include the last 5 processed rows (they may have been updated) and any newer rows
                 if last_processed_datetime:
-                    df_to_insert = df_processed[df_processed.index > last_processed_datetime]
+                    # Get the 5th row back from last_processed_datetime
+                    all_datetimes = sorted(df_processed.index)
+                    last_idx = all_datetimes.index(last_processed_datetime) if last_processed_datetime in all_datetimes else -1
+                    start_idx = max(0, last_idx - 4)  # Go back 4 rows (total of 5 including current)
+                    cutoff_datetime = all_datetimes[start_idx] if start_idx >= 0 else all_datetimes[0]
+                    df_to_insert = df_processed[df_processed.index >= cutoff_datetime]
                 else:
                     df_to_insert = df_processed
                 
-                # Insert new results
+                # Upsert results
                 if not df_to_insert.empty:
-                    rows_inserted = insert_analysis_results(cursor, conn, df_to_insert)
+                    rows_total, new_rows, updated_count = insert_analysis_results(cursor, conn, df_to_insert, last_processed_datetime)
                     
-                    if rows_inserted > 0:
-                        # Update last processed datetime
-                        last_processed_datetime = df_to_insert.index[-1]
-                        last_processed_datetime_est = df_to_insert['DateTime_EST'].iloc[-1]
-                        logger.info(f"Updated last processed datetime to: {last_processed_datetime_est} EST ({last_processed_datetime} UTC)")
+                    if rows_total > 0:
+                        # Log new rows
+                        for dt_utc, dt_est in new_rows:
+                            logger.info(f"New Row: {dt_est} EST ({dt_utc} UTC)")
+                        
+                        # Log updates
+                        if updated_count > 0:
+                            logger.info(f"Row Updated...")
+                        
+                        # Update last processed datetime (only if we have new rows)
+                        if new_rows:
+                            last_processed_datetime = df_to_insert.index[-1]
+                            last_processed_datetime_est = df_to_insert['DateTime_EST'].iloc[-1]
                 else:
                     logger.info("No new rows to insert after processing")
             else:
