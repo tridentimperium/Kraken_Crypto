@@ -2,8 +2,8 @@
   "SQL_Connection_Mode": "1",
   "Symbol_ID": "ETH/USD",
   "Timeframe": "1",
-  "Live_Data_HRs_Coinbase": "2",
-  "Live_Data_HRs_Kraken": "2",
+  "Live_Data_HRs_Coinbase": "6",
+  "Live_Data_HRs_Kraken": "6",
   "StartingBalance": 200000.00,
   "PerOrderTradePercent": "95",
   "Leverage": "4"
