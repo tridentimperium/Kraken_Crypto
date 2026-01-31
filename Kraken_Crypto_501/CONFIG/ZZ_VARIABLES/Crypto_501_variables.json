@@ -14,14 +14,14 @@
   "EntryCount": [1],
   "EntryCount_N": "1 = LH → LL, 2 = HH → HH → HL → HH",
 
-  "TargetDirection": [3],
+  "TargetDirection": [1],
   "TargetDirection_N": "1 = Long, 2 = Short, 3= Both",
   
-  "L_ProfitTargetPercent": [0.8, 1],
-  "L_StopLossPercent": [-0.3],
+  "L_ProfitTargetPercent": [0.3],
+  "L_StopLossPercent": [-0.7],
 
-  "S_ProfitTargetPercent": [0.8,1],
-  "S_StopLossPercent": [-0.5],
+  "S_ProfitTargetPercent": [0],
+  "S_StopLossPercent": [0],
     
   "LogLevel": "INFO",
   "LogLevel_Comments": "A string (default: 'INFO', converted to uppercase) that sets the logging verbosity. Possible values include 'DEBUG', 'INFO', 'WARNING', 'ERROR', etc. It adjusts the detail level of log messages output to stdout."

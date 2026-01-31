@@ -4,9 +4,12 @@ import time
 import json
 import psutil
 import pyodbc
+import subprocess
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import pytz
+
+
 
 # ================================
 # WINDOWS CONSOLE SETUP
@@ -22,13 +25,21 @@ base_path = os.path.dirname(execution_dir) if os.path.basename(execution_dir) ==
 config_path = os.path.join(base_path, "CONFIG")
 params_file = os.path.join(config_path, "ZZ_PARAMETERS", "Crypto_501_parameters.json")
 
-# Scripts to monitor
-SCRIPTS_TO_MONITOR = [
-    "Live_Data_All.py",
-    "Live_Data_Kraken_1_min.py",
-    "Live_Data_Coinbase_1_min.py",
-    "Live_Data_Coinbase_5_min.py"
-]
+# Determine where scripts are located
+if os.path.basename(execution_dir) == "EXECUTION":
+    scripts_dir = execution_dir
+else:
+    scripts_dir = os.path.join(execution_dir, "EXECUTION")
+    if not os.path.exists(scripts_dir):
+        scripts_dir = execution_dir
+
+# Scripts to monitor and their full paths
+SCRIPTS_TO_MONITOR = {
+    "Crypto_501_DEV_01_01_Live_Data_All.py": os.path.join(scripts_dir, "Crypto_501_DEV_01_01_Live_Data_All.py"),
+    "Crypto_501_DEV_01_01_Live_Data_Kraken_1_min.py": os.path.join(scripts_dir, "Crypto_501_DEV_01_01_Live_Data_Kraken_1_min.py"),
+    "Crypto_501_DEV_01_01_Live_Data_Coinbase_1_min.py": os.path.join(scripts_dir, "Crypto_501_DEV_01_01_Live_Data_Coinbase_1_min.py"),
+    "Crypto_501_DEV_01_01_Live_Data_Coinbase_5_min.py": os.path.join(scripts_dir, "Crypto_501_DEV_01_01_Live_Data_Coinbase_5_min.py")
+}
 
 # Tables to monitor
 TABLES_TO_MONITOR = [
@@ -74,7 +85,7 @@ def get_sql_connection():
         return None
 
 # ================================
-# PROCESS MONITORING
+# PROCESS MANAGEMENT
 # ================================
 def check_process_running(script_name):
     """Check if a Python script is currently running"""
@@ -87,6 +98,66 @@ def check_process_running(script_name):
             continue
     return False, None
 
+def start_script(script_path, script_name):
+    """Start a Python script in a new process"""
+    try:
+        script_dir = os.path.dirname(script_path)
+            
+        if os.name == 'nt':  # Windows
+            process = subprocess.Popen(
+                [sys.executable, script_path],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                cwd=script_dir
+            )
+            return True
+        else:  # Linux/Mac
+            log_file = os.path.join(script_dir, f"{script_name}.log")
+            with open(log_file, 'w') as log:
+                process = subprocess.Popen(
+                    [sys.executable, script_path],
+                    cwd=script_dir,
+                    stdout=log,
+                    stderr=subprocess.STDOUT
+                )
+            return True
+    except Exception as e:
+        print(f"    ERROR: {e}")
+        return False
+
+def start_all_scripts():
+    """Start all data collection scripts"""
+    print("\n" + "=" * 100)
+    print("  STARTING DATA COLLECTION SCRIPTS")
+    print("=" * 100)
+    
+    started_count = 0
+    
+    for script_name, script_path in SCRIPTS_TO_MONITOR.items():
+        # Check if already running
+        running, pid = check_process_running(script_name)
+        
+        if running:
+            print(f"  Already running: {script_name} (PID: {pid})")
+            started_count += 1
+        else:
+            if os.path.exists(script_path):
+                print(f"  Starting: {script_name}...")
+                if start_script(script_path, script_name):
+                    started_count += 1
+                    time.sleep(2)
+            else:
+                print(f"  NOT FOUND: {script_name}")
+    
+    print("=" * 100)
+    print(f"  Scripts running: {started_count}/{len(SCRIPTS_TO_MONITOR)}")
+    print("=" * 100)
+    
+    if started_count > 0:
+        print("\n  Waiting 5 seconds for initialization...")
+        time.sleep(5)
+    
+    return started_count
+
 # ================================
 # DATABASE MONITORING
 # ================================
@@ -94,6 +165,23 @@ def check_table_status(conn, table_name):
     """Check the latest update time and row count for a table"""
     try:
         cursor = conn.cursor()
+        
+        # First, check if table actually exists
+        table_parts = table_name.split('.')
+        schema = table_parts[0] if len(table_parts) > 1 else 'dbo'
+        table = table_parts[1] if len(table_parts) > 1 else table_parts[0]
+        
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+        """, schema, table)
+        
+        if cursor.fetchone()[0] == 0:
+            return {
+                'exists': False,
+                'error': 'Table does not exist in database'
+            }
         
         # Get row count
         cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
@@ -136,7 +224,7 @@ def check_table_status(conn, table_name):
     except Exception as e:
         return {
             'exists': False,
-            'error': str(e)
+            'error': f'Error checking table: {str(e)}'
         }
 
 # ================================
@@ -250,15 +338,20 @@ def main():
         sys.exit(1)
     
     print("Database connected successfully!")
-    time.sleep(1)
+    
+    # Just start the scripts - no bullshit
+    start_all_scripts()
+    
+    print("\nStarting monitoring loop...")
+    time.sleep(2)
     
     try:
         while True:
             # Check process status
             process_status = {}
-            for script in SCRIPTS_TO_MONITOR:
-                running, pid = check_process_running(script)
-                process_status[script] = (running, pid)
+            for script_name in SCRIPTS_TO_MONITOR.keys():
+                running, pid = check_process_running(script_name)
+                process_status[script_name] = (running, pid)
             
             # Check table status
             table_status = {}

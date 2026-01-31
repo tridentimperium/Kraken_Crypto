@@ -28,10 +28,10 @@ if not symbol_id_raw or not isinstance(symbol_id_raw, str):
     print("Symbol_ID required")
     sys.exit(1)
 
-symbol_kraken   = symbol_id_raw.replace("KRAKEN_SPOT_", "").replace("_", "/")
-symbol_coinbase = symbol_id_raw.replace("KRAKEN_SPOT_", "").replace("_", "-")
-
-keep_hours = int(params.get("Live_Data_HRs_All", params.get("Live_Data_HRs_Coinbase", 24)))
+# Symbol conversions
+# If symbol is like "BTC/USD", convert appropriately for each exchange
+symbol_kraken   = symbol_id_raw  # Kraken uses BTC/USD format
+symbol_coinbase = symbol_id_raw.replace("/", "-")  # Coinbase uses BTC-USD format
 
 # ================================
 # SQL CONNECTION
@@ -208,7 +208,7 @@ while True:
                 c5[6] if c5 else None
             )
 
-            # MERGE – now forces overwrite with latest source values
+            # MERGE – forces overwrite with latest source values
             cursor.execute(f"""
                 MERGE INTO {UNIFIED_TABLE} AS t
                 USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s
@@ -294,14 +294,6 @@ while True:
 
             print(f"{sym} {tf} @ {newest_dt.isoformat()} UTC / {newest_est.isoformat()} EST")
             last_printed_dt = newest_dt
-
-        # Cleanup
-        if keep_hours > 0:
-            cursor.execute(f"""
-                DELETE FROM {UNIFIED_TABLE}
-                WHERE DateTime < DATEADD(HOUR, -{keep_hours + 2}, GETUTCDATE())
-            """)
-            conn.commit()
 
         time.sleep(1)
 
